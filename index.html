@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+
+    <title>INTERFACE</title>
+
+    <style>
+        body,
+        html {
+            background-color: transparent;
+        }
+
+        .transparent {
+            background-color: transparent;
+        }
+
+        .biggest-container {
+            width: 1920px;
+            height: 1080px;
+            border: 1px solid red;
+            position: relative;
+        }
+
+        .pet-container {
+            position: absolute;
+        }
+        .pet-container video {
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+    </style>
+
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/2.1.3/jquery.min.js"></script>
+</head>
+
+<body>
+
+    <div class="biggest-container transparent">
+
+        <div class="pet-container"></div>
+
+    </div>
+
+    <script>
+
+        window.g_api_key = '9999999999999999999999999999999999999999999999999999999999999999999999999999999999999';
+        window.g_table_id = '1ASMkzm2oUMMUwrr48KxssU7SYkokc_oexCE0pkRkDJY';
+        window.list = 'КрасивыйСбор';
+
+        window.full_url_for_g_table = 'https://sheets.googleapis.com/v4/spreadsheets/' + window.g_table_id + '/values/' + window.list + '?key=' + window.g_api_key;
+
+        window.donation_alerts_base_url = 'https://www.donationalerts.com/api/v1';
+        window.centrifugo_url = 'wss://centrifugo.donationalerts.com/connection/websocket';
+
+        window.g_apps_url = '9999999999999999999999999999999999999999999999999999999999999999999999999999999999999';
+
+        window.donation_alerts_token = '';
+        window.da_user_id = '';
+        window.centrifugo_channel_token = '';
+
+        window.range_current = 'КрасивыйСбор!B8:B8';
+        window.range_goal = 'КрасивыйСбор!D8:D8';
+        window.statuses_starting_index = 14;
+
+        window.table_data = {};
+        window.da_goal_data = {};
+        window.current_animation_status_id = '';
+        window.animations = {};
+        window.event_queue = {'waiting': [], 'completed': [], 'last_completed_event_id': 0};
+
+        window.centrifugo_ping_active = false;
+        window.time_stamp_centrifugo_ping = 0;
+        window.time_stamp_centrifugo_launch = 0;
+
+        function get_table (call_back_func) {
+            $.get(
+                window.full_url_for_g_table,
+                function (response) {
+                    call_back_func(response);
+                }
+            );
+        }
+
+        function write_to_sheet (params, call_back_func) {
+            params['request_type'] = 'write_to_sheet';
+
+            var url = window.g_apps_url;
+
+            fetch(
+                url,
+                {
+                    redirect: "follow",
+                    method: "POST",
+                    body: JSON.stringify(params),
+                    headers: {
+                        'Content-Type': "text/plain;charset=utf-8"
+                    }
+                }
+            )
+            .then(response => {
+                call_back_func();
+            });
+        }
+
+        function da_request (params, call_back_func) {
+            params['request_type'] = 'da_request';
+
+            params['token'] = window.donation_alerts_token;
+            params['url'] = window.donation_alerts_base_url;
+            if (params['params']) {
+                params['params'] = JSON.stringify(params['params']);
+            } else {
+                params['params'] = '';
+            }
+
+            var url = window.g_apps_url;
+
+            fetch(
+                url,
+                {
+                    redirect: "follow",
+                    method: "POST",
+                    body: JSON.stringify(params),
+                    headers: {
+                        'Content-Type': "text/plain;charset=utf-8"
+                    }
+                }
+            )
+            .then(response => response.text())
+            .then(result => {
+                const res = JSON.parse(result);
+                call_back_func(res);
+            });
+        }
+
+//        function da_handle_response (da_response) {
+//            window.da_response = da_response;
+//        }
+//
+//        da_request({'method': '/alerts/donations', 'type': 'get'}, da_handle_response);
+
+        function start_centrifugo_3 (da_response) {
+            window.centrifugo_channel_token = da_response['channels'][0]['token'];
+
+            window.centrifugo_socket.send(
+                JSON.stringify({
+                    'params': {
+                        'token': window.centrifugo_channel_token,
+                        'channel': '$goals:goal_' + window.da_user_id
+                    },
+                    'method': 1,
+                    'id': 2
+                })
+            );
+        }
+        function start_centrifugo_2 (da_response) {
+            var socket_connection_token = da_response['data']['socket_connection_token'];
+            window.da_user_id = da_response['data']['id'];
+
+            window.centrifugo_socket = new WebSocket(window.centrifugo_url);
+
+            window.centrifugo_socket.onmessage = function(event) {
+                window.time_stamp_centrifugo_ping = Date.now();
+
+                var event_data = JSON.parse(event.data);
+
+                if (event_data.id === 1) {
+                    var da_request_params = {'client': event_data.result.client, 'channels': ['$goals:goal_' + window.da_user_id]};
+                    da_request({'method': '/centrifuge/subscribe', 'type': 'post', 'params': da_request_params}, start_centrifugo_3);
+                } else if ('result' in event_data && 'data' in event_data['result'] && 'data' in event_data['result']['data']
+                        && 'goal_amount' in event_data['result']['data']['data'] && 'raised_amount' in event_data['result']['data']['data']
+                        && 'seq' in event_data['result']['data'] && 'is_default' in event_data['result']['data']['data']
+                        && event_data['result']['data']['data']['is_default'] === 1) {
+                    window.event_queue['waiting'].push(event_data);
+                }
+            };
+
+            window.centrifugo_socket.onopen = function() {
+                window.centrifugo_socket.send(
+                    JSON.stringify({
+                        'params': {
+                            'token': socket_connection_token
+                        },
+                        'id': 1
+                    })
+                );
+            };
+        }
+        function start_centrifugo () {
+            da_request({'method': '/user/oauth', 'type': 'get'}, start_centrifugo_2);
+        }
+
+        function web_socket_checkup () {
+            var time_stamp_now = Date.now();
+
+            var three_minutes_since_launch = (time_stamp_now - window.time_stamp_centrifugo_launch) > (1000 * 60 * 3);
+
+            if ( three_minutes_since_launch ) {
+                if ( ! window.centrifugo_ping_active ) {
+                    window.centrifugo_ping_active = true;
+                    window.time_stamp_centrifugo_ping = Date.now();
+                }
+            }
+
+            if (window.centrifugo_ping_active) {
+                var one_minute_since_ping = (time_stamp_now - window.time_stamp_centrifugo_ping) > (1000 * 60);
+
+                if (one_minute_since_ping) {
+                    window.centrifugo_ping_active = false;
+                    window.time_stamp_centrifugo_launch = Date.now();
+
+                    window.centrifugo_socket.close();
+
+                    start_centrifugo();
+                } else {
+                    if (window.centrifugo_channel_token) {
+                        window.centrifugo_socket.send(
+                            JSON.stringify({
+                                'params': {
+                                    'token': window.centrifugo_channel_token,
+                                    'channel': '$goals:goal_' + window.da_user_id
+                                },
+                                'method': 1,
+                                'id': 2
+                            })
+                        );
+                    }
+                }
+            }
+
+            setTimeout(web_socket_checkup, 1000 * 20);
+        }
+
+        function get_da_goal_percent () {
+            var da_goal_percent = Math.floor(window.da_goal_data['current'] / window.da_goal_data['goal'] * 100);
+            if (da_goal_percent > 100) {
+                da_goal_percent = 100
+            }
+            return da_goal_percent;
+        }
+
+        function end_of_morphing_process () {
+            $('.status-video:not(#status-morphing)').css('opacity', '0');
+
+            $('#status-' + window.current_animation_status_id).css('opacity', '1');
+
+            update_sheets_current();
+        }
+        function stop_animation () {
+            $('.status-video').css('opacity', '0');
+
+            $('#status-' + window.current_animation_status_id).css('opacity', '1');
+
+            update_sheets_current();
+        }
+        function update_sheets_goal () {
+            if (window.da_goal_data['goal_changed']) {
+                window.da_goal_data['goal_changed'] = false;
+
+                write_to_sheet({'spreadsheet_id': window.g_table_id, 'range': window.range_goal, 'new_value': window.da_goal_data['goal']}, check_event_queue);
+            } else {
+                setTimeout(check_event_queue, 100);
+            }
+        }
+        function update_sheets_current () {
+            if (window.da_goal_data['current_changed']) {
+                window.da_goal_data['current_changed'] = false;
+
+                write_to_sheet({'spreadsheet_id': window.g_table_id, 'range': window.range_current, 'new_value': window.da_goal_data['current']}, update_sheets_goal);
+            } else {
+                update_sheets_goal();
+            }
+        }
+        function process_event (event_to_process_data) {
+            var raised_amount = event_to_process_data['result']['data']['data']['raised_amount'];
+            var goal_amount = event_to_process_data['result']['data']['data']['goal_amount'];
+
+            var raised_changed = window.da_goal_data['current'] !== raised_amount;
+            var goal_changed = window.da_goal_data['goal'] !== goal_amount;
+
+            if (raised_changed || goal_changed) {
+                var is_this_a_new_donation = false;
+                if (raised_changed && raised_amount > window.da_goal_data['current']) {
+                    is_this_a_new_donation = true;
+                }
+
+                window.da_goal_data['current_changed'] = raised_changed;
+                window.da_goal_data['goal_changed'] = goal_changed;
+
+                window.da_goal_data['current'] = raised_amount;
+                window.da_goal_data['goal'] = goal_amount;
+
+                var current_goal_percent = get_da_goal_percent();
+
+                var status_changed = false;
+                window.animations['statuses'].forEach(function (status_iter) {
+                    if (status_iter['end'] >= current_goal_percent && current_goal_percent >= status_iter['start']) {
+                        if (window.current_animation_status_id !== status_iter['status_number']) {
+                            status_changed = true;
+                            window.current_animation_status_id = status_iter['status_number'];
+                        }
+                    }
+                });
+
+                if (status_changed) {
+                    $('#status-morphing').css('opacity', '1');
+                    $('#status-morphing')[0].play();
+
+                    setTimeout(end_of_morphing_process, window.animations['morphing']['delay_duration']);
+                } else if (is_this_a_new_donation) {
+                    $('.status-video').css('opacity', '0');
+
+                    $('#status-donate-' + window.current_animation_status_id).css('opacity', '1');
+
+                    if ( ! window.animations['donate-' + window.current_animation_status_id]['is_looped'] ) {
+                        $('#status-donate-' + window.current_animation_status_id)[0].play();
+                    }
+
+                    setTimeout(stop_animation, window.animations['donate-' + window.current_animation_status_id]['duration']);
+                } else {
+                    update_sheets_current();
+                }
+            } else {
+                setTimeout(check_event_queue, 100);
+            }
+        }
+        function check_event_queue () {
+            var event_to_process_id = null;
+            var event_to_process_data = null;
+
+            window.event_queue['waiting'].forEach(function(queue_item) {
+                var queue_item_id = queue_item['result']['data']['seq'];
+                if ( ! event_to_process_id && ! window.event_queue['completed'].includes(queue_item_id) ) {
+                    event_to_process_id = queue_item_id;
+                    event_to_process_data = queue_item;
+                }
+            });
+
+            if (event_to_process_id) {
+                window.event_queue['completed'].push(event_to_process_id);
+
+                if (event_to_process_id > window.event_queue['last_completed_event_id']) {
+                    window.event_queue['last_completed_event_id'] = event_to_process_id;
+                    process_event(event_to_process_data);
+                } else {
+                    setTimeout(check_event_queue, 100);
+                }
+            } else {
+                setTimeout(check_event_queue, 100);
+            }
+        }
+
+        function draw_starting_elements () {
+            var current_goal_percent = get_da_goal_percent();
+
+            var statuses_to_draw = [];
+            window.animations['statuses'].forEach(function (status_iter) {
+                statuses_to_draw.push(status_iter);
+            });
+            $.each(window.animations, function(animation_key, animation_data) {
+                if (animation_key !== 'statuses') {
+                    var is_looped = animation_data['is_looped'];
+                    if (animation_key === 'morphing') {
+                        is_looped = false;
+                    }
+
+                    statuses_to_draw.push({
+                        'is_extra_animation': true,
+                        'status_number': animation_key,
+                        'img_url': animation_data['img_url'],
+                        'is_looped': is_looped
+                    });
+                }
+            });
+
+            var pet_container_html = '';
+            var is_status_active = false;
+            statuses_to_draw.forEach(function (status_iter) {
+                var is_looped = true;
+                if (status_iter['is_extra_animation']) {
+                    is_looped = status_iter['is_looped'];
+                }
+
+                if (status_iter['is_extra_animation']) {
+                    is_status_active = false;
+                } else {
+                    is_status_active = status_iter['end'] >= current_goal_percent && current_goal_percent >= status_iter['start'];
+                }
+
+                if (is_status_active) {
+                    window.current_animation_status_id = status_iter['status_number'];
+                }
+
+                pet_container_html += '<video class="status-video" muted playsinline';
+                if (is_looped) {
+                    pet_container_html += ' autoplay loop';
+                }
+                pet_container_html += ' id="';
+                pet_container_html += 'status-' + status_iter['status_number'];
+                pet_container_html += '"';
+                pet_container_html += ' style="display:inline';
+                if (is_status_active) {
+                    pet_container_html += ';opacity:1';
+                } else {
+                    pet_container_html += ';opacity:0';
+                }
+                pet_container_html += '"';
+                pet_container_html += '><source src="';
+                pet_container_html += status_iter['img_url'];
+                pet_container_html += '" type="video/webm"></video>';
+            });
+            $('.pet-container').html(pet_container_html);
+            $('.pet-container').css('left', window.table_data['placement']['left'] + 'px');
+            $('.pet-container').css('top', window.table_data['placement']['top'] + 'px');
+
+            check_event_queue();
+        }
+
+        function load_starting_data (response) {
+            var response_data = response.values;
+
+            window.donation_alerts_token = response_data[1][1];
+
+            window.table_data['placement'] = {
+                'top': 0,
+                'left': 0
+            };
+
+            window.table_data['placement']['left'] = parseInt(response_data[4][1]);
+            window.table_data['placement']['top'] = parseInt(response_data[4][3]);
+
+            window.da_goal_data['current_changed'] = false;
+            window.da_goal_data['goal_changed'] = false;
+            window.da_goal_data['current'] = parseInt(response_data[7][1]);
+            window.da_goal_data['goal'] = parseInt(response_data[7][3]);
+
+            window.animations['morphing'] = {};
+            window.animations['morphing']['img_url'] = response_data[10][1];
+            window.animations['morphing']['delay_duration'] = parseInt(response_data[10][3]);
+
+            window.animations['statuses'] = [];
+            if (response_data.length > window.statuses_starting_index) {
+                var status_counter = 1;
+
+                for ( var i = window.statuses_starting_index; i < response_data.length; i++ ) {
+                    var status_iter = response_data[i];
+
+                    window.animations['statuses'].push(
+                        {
+                            'status_number': status_counter,
+                            'start': parseInt(status_iter[0]),
+                            'end': parseInt(status_iter[1]),
+                            'img_url': status_iter[2]
+                        }
+                    );
+
+                    window.animations['donate-' + status_counter] = {};
+                    window.animations['donate-' + status_counter]['img_url'] = status_iter[3];
+                    window.animations['donate-' + status_counter]['duration'] = parseInt(status_iter[4]);
+                    window.animations['donate-' + status_counter]['is_looped'] = status_iter[5] === 'да';
+
+                    status_counter += 1;
+                }
+            }
+
+            window.time_stamp_centrifugo_launch = Date.now();
+
+            draw_starting_elements();
+            start_centrifugo();
+            setTimeout(web_socket_checkup, 1000 * 60 * 3);
+        }
+        get_table(load_starting_data);
+
+    </script>
+
+</body>
+
+</html>
+
